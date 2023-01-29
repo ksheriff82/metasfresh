@@ -57,6 +57,9 @@ import org.compiere.model.I_C_CreditLimit_Type;
 import org.compiere.model.I_C_Incoterms;
 import org.compiere.model.I_C_PaymentTerm;
 import org.compiere.model.I_M_SectionCode;
+import org.compiere.model.I_C_Country;
+import org.compiere.model.I_C_Location;
+import org.compiere.model.I_C_Postal;
 
 import java.math.BigDecimal;
 import java.sql.Timestamp;
@@ -279,6 +282,12 @@ public class CreateBPartnerV2_StepDef
 				softly.assertThat(bPartnerRecord.getSection_Group_Partner_ID()).isEqualTo(sectionGroupPartner.getC_BPartner_ID());
 			}
 
+			final Boolean isProspect = DataTableUtil.extractBooleanForColumnNameOrNull(dataTableRow, "OPT." + I_C_BPartner.COLUMNNAME_IsProspect);
+			if(isProspect != null)
+			{
+				softly.assertThat(bPartnerRecord.isProspect()).isEqualTo(isProspect);
+			}
+
 			softly.assertAll();
 
 			if (org != null)
@@ -297,8 +306,6 @@ public class CreateBPartnerV2_StepDef
 		final List<Map<String, String>> locationsTableList = dataTable.asMaps();
 		for (final Map<String, String> dataTableRow : locationsTableList)
 		{
-			final SoftAssertions softly = new SoftAssertions();
-
 			final String bpartnerIdentifier = DataTableUtil.extractStringForColumnName(dataTableRow, "bpartnerIdentifier");
 			final String locationIdentifier = DataTableUtil.extractStringForColumnName(dataTableRow, "locationIdentifier");
 			final String address1 = DataTableUtil.extractStringOrNullForColumnName(dataTableRow, "OPT.Address1");
@@ -314,25 +321,35 @@ public class CreateBPartnerV2_StepDef
 			final boolean remitTo = DataTableUtil.extractBooleanForColumnNameOr(dataTableRow, "OPT." + I_C_BPartner_Location.COLUMNNAME_IsRemitTo, false);
 			final boolean replicationLookupDefault = DataTableUtil.extractBooleanForColumnNameOr(dataTableRow, "OPT." + I_C_BPartner_Location.COLUMNNAME_IsReplicationLookupDefault, false);
 			final String vatId = DataTableUtil.extractStringOrNullForColumnName(dataTableRow, "OPT.VATaxId");
+			final String sapPaymentMethod = DataTableUtil.extractStringOrNullForColumnName(dataTableRow, "OPT.SAP_PaymentMethod");
+			final Boolean isShipToDefault = DataTableUtil.extractBooleanForColumnNameOr(dataTableRow, "OPT." + I_C_BPartner_Location.COLUMNNAME_IsShipToDefault, null);
 
 			// persisted value
 			final Optional<JsonResponseLocation> persistedResult = bpartnerEndpointService.retrieveBPartnerLocation(
 					null, ExternalIdentifier.of(bpartnerIdentifier), ExternalIdentifier.of(locationIdentifier));
 			final JsonResponseLocation persistedLocation = persistedResult.get();
 
-			softly.assertThat(persistedLocation.getAddress1()).isEqualTo(address1);
-			softly.assertThat(persistedLocation.getAddress2()).isEqualTo(address2);
-			softly.assertThat(persistedLocation.getPostal()).isEqualTo(postal);
-			softly.assertThat(persistedLocation.getPoBox()).isEqualTo(poBox);
-			softly.assertThat(persistedLocation.getRegion()).isEqualTo(region);
-			softly.assertThat(persistedLocation.getCountryCode()).isEqualTo(countryCode);
-			softly.assertThat(persistedLocation.getCity()).isEqualTo(city);
-			softly.assertThat(persistedLocation.getDistrict()).isEqualTo(DataTableUtil.extractValueOrNull(district));
-			softly.assertThat(persistedLocation.getGln()).isEqualTo(gln);
-			softly.assertThat(persistedLocation.isHandoverLocation()).isEqualTo(handoverLocation);
-			softly.assertThat(persistedLocation.isRemitTo()).isEqualTo(remitTo);
-			softly.assertThat(persistedLocation.isReplicationLookupDefault()).isEqualTo(replicationLookupDefault);
-			softly.assertThat(persistedLocation.getVatId()).isEqualTo(vatId);
+			final SoftAssertions softly = new SoftAssertions();
+
+			softly.assertThat(persistedLocation.getAddress1()).as(I_C_Location.COLUMNNAME_Address1).isEqualTo(address1);
+			softly.assertThat(persistedLocation.getAddress2()).as(I_C_Location.COLUMNNAME_Address2).isEqualTo(address2);
+			softly.assertThat(persistedLocation.getPostal()).as(I_C_Location.COLUMNNAME_Postal).isEqualTo(postal);
+			softly.assertThat(persistedLocation.getPoBox()).as(I_C_Location.COLUMNNAME_POBox).isEqualTo(poBox);
+			softly.assertThat(persistedLocation.getRegion()).as(I_C_Location.COLUMNNAME_RegionName).isEqualTo(region);
+			softly.assertThat(persistedLocation.getCountryCode()).as(I_C_Country.COLUMNNAME_CountryCode).isEqualTo(countryCode);
+			softly.assertThat(persistedLocation.getCity()).as(I_C_Location.COLUMNNAME_City).isEqualTo(city);
+			softly.assertThat(persistedLocation.getDistrict()).as(I_C_Postal.COLUMNNAME_District).isEqualTo(DataTableUtil.extractValueOrNull(district));
+			softly.assertThat(persistedLocation.getGln()).as(I_C_BPartner_Location.COLUMNNAME_GLN).isEqualTo(gln);
+			softly.assertThat(persistedLocation.isHandoverLocation()).as(I_C_BPartner_Location.COLUMNNAME_IsHandOverLocation).isEqualTo(handoverLocation);
+			softly.assertThat(persistedLocation.isRemitTo()).as(I_C_BPartner_Location.COLUMNNAME_IsRemitTo).isEqualTo(remitTo);
+			softly.assertThat(persistedLocation.isReplicationLookupDefault()).as(I_C_BPartner_Location.COLUMNNAME_IsReplicationLookupDefault).isEqualTo(replicationLookupDefault);
+			softly.assertThat(persistedLocation.getVatId()).as(I_C_BPartner_Location.COLUMNNAME_VATaxID).isEqualTo(vatId);
+			softly.assertThat(persistedLocation.getSapPaymentMethod()).as(I_C_BPartner_Location.COLUMNNAME_SAP_PaymentMethod).isEqualTo(sapPaymentMethod);
+
+			if (isShipToDefault != null)
+			{
+				softly.assertThat(persistedLocation.isShipToDefault()).as(I_C_BPartner_Location.COLUMNNAME_IsShipToDefault).isEqualTo(isShipToDefault);
+			}
 
 			softly.assertAll();
 		}

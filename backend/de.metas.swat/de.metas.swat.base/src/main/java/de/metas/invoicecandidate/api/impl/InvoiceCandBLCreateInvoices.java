@@ -11,6 +11,7 @@ import de.metas.document.dimension.Dimension;
 import de.metas.document.dimension.DimensionService;
 import de.metas.document.engine.IDocument;
 import de.metas.document.engine.IDocumentBL;
+import de.metas.document.invoicingpool.DocTypeInvoicingPoolService;
 import de.metas.i18n.AdMessageId;
 import de.metas.i18n.AdMessageKey;
 import de.metas.i18n.IADMessageDAO;
@@ -152,6 +153,7 @@ public class InvoiceCandBLCreateInvoices implements IInvoiceGenerator
 	private final transient IOrderDAO orderDAO = Services.get(IOrderDAO.class);
 	private final transient IInOutDAO inoutDAO = Services.get(IInOutDAO.class);
 	private final transient DimensionService dimensionService = SpringContextHolder.instance.getBean(DimensionService.class);
+	private final transient DocTypeInvoicingPoolService docTypeInvoicingPoolService = SpringContextHolder.instance.getBean(DocTypeInvoicingPoolService.class);
 	private final transient IUserBL userBL = Services.get(IUserBL.class);
 
 	//
@@ -261,14 +263,14 @@ public class InvoiceCandBLCreateInvoices implements IInvoiceGenerator
 				invoiceCandListeners.onBeforeInvoiceComplete(invoice, allCands);
 			}
 
-			if(getInvoicingParams().isCompleteInvoices())
+			if (getInvoicingParams().isCompleteInvoices())
 			{
 				// Complete the invoice and assume its status is COmpleted.
 				docActionBL.processEx(invoice, IDocument.ACTION_Complete, IDocument.STATUS_Completed);
 			}
-			else 
+			else
 			{
-				docActionBL.processEx(invoice, IDocument.ACTION_Prepare, IDocument.STATUS_InProgress);	
+				docActionBL.processEx(invoice, IDocument.ACTION_Prepare, IDocument.STATUS_InProgress);
 			}
 
 			//
@@ -401,6 +403,7 @@ public class InvoiceCandBLCreateInvoices implements IInvoiceGenerator
 					.setFrom(billTo.toDocumentLocation());
 
 			invoice.setC_Currency_ID(invoiceHeader.getCurrencyId().getRepoId()); // 03805
+			invoice.setCurrencyRate(invoiceHeader.getCurrencyRate());
 			final BPartnerId salesRepId = invoiceHeader.getSalesPartnerId();
 			if (!BPartnerId.equals(billTo.getBpartnerId(), salesRepId))
 			{
@@ -844,7 +847,7 @@ public class InvoiceCandBLCreateInvoices implements IInvoiceGenerator
 		}
 
 		@Override
-		public boolean doCatch(final Throwable e) throws Throwable
+		public boolean doCatch(final Throwable e)
 		{
 			if (errorException[0] == null)
 			{
@@ -950,6 +953,8 @@ public class InvoiceCandBLCreateInvoices implements IInvoiceGenerator
 				.dateInvoicedParam(invoicingParams != null ? invoicingParams.getDateInvoiced() : null)
 				.dateAcctParam(invoicingParams != null ? invoicingParams.getDateAcct() : null)
 				.useDefaultBillLocationAndContactIfNotOverride(invoicingParams != null && invoicingParams.isUpdateLocationAndContactForInvoice())
+				.currencyRate(invoicingParams != null ? invoicingParams.getCurrencyRate().orElse(null) : null)
+				.docTypeInvoicingPoolService(docTypeInvoicingPoolService)
 				.build();
 	}
 

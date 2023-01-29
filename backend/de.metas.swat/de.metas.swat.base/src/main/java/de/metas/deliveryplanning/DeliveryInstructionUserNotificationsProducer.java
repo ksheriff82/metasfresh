@@ -23,12 +23,17 @@
 package de.metas.deliveryplanning;
 
 import com.google.common.collect.ImmutableList;
+import de.metas.bpartner.service.BPartnerStats;
+import de.metas.document.engine.DocStatus;
 import de.metas.event.Topic;
 import de.metas.event.Type;
 import de.metas.i18n.AdMessageKey;
+import de.metas.i18n.ITranslatableString;
+import de.metas.money.Money;
 import de.metas.notification.INotificationBL;
 import de.metas.notification.UserNotificationRequest;
 import de.metas.shipping.model.I_M_ShipperTransportation;
+import de.metas.user.UserId;
 import de.metas.util.Services;
 import lombok.NonNull;
 import org.adempiere.ad.element.api.AdWindowId;
@@ -40,7 +45,9 @@ import java.util.List;
 
 public class DeliveryInstructionUserNotificationsProducer
 {
-	public static final DeliveryInstructionUserNotificationsProducer newInstance()
+	private final INotificationBL notificationBL = Services.get(INotificationBL.class);
+
+	public static DeliveryInstructionUserNotificationsProducer newInstance()
 	{
 		return new DeliveryInstructionUserNotificationsProducer();
 	}
@@ -55,6 +62,8 @@ public class DeliveryInstructionUserNotificationsProducer
 
 	private static final AdWindowId WINDOW_DELIVERY_INSTRUCTION = AdWindowId.ofRepoId(541657); // FIXME: HARDCODED
 	private static final AdMessageKey MSG_Event_DeliveryInstructionGenerated = AdMessageKey.of("de.metas.deliveryplanning.Event_DeliveryInstructionGenerated");
+
+	private static final AdMessageKey MSG_DeliveryInstruction_CreditLimitNotSufficient = AdMessageKey.of("de.metas.deliveryplanning.Event_CreditLimitNotSufficient");
 
 	private DeliveryInstructionUserNotificationsProducer()
 	{
@@ -85,12 +94,35 @@ public class DeliveryInstructionUserNotificationsProducer
 		final TableRecordReference deliveryInstructionRef = toTableRecordRef(deliveryInstruction);
 
 		return newUserNotificationRequest()
-				.recipientUserId(Env.getLoggedUserId())
+				.recipientUserId(getNotificationRecipientUserId(deliveryInstruction))
 				.contentADMessage(MSG_Event_DeliveryInstructionGenerated)
 				.contentADMessageParam(deliveryInstructionRef)
 				.targetAction(UserNotificationRequest.TargetRecordAction.ofRecordAndWindow(deliveryInstructionRef, WINDOW_DELIVERY_INSTRUCTION))
 				.build();
 
+	}
+
+	private UserId getNotificationRecipientUserId(final I_M_ShipperTransportation deliveryInstruction)
+	{
+		//
+		// In case of reversal i think we shall notify the current user too
+		final DocStatus docStatus = DocStatus.ofNullableCodeOrUnknown(deliveryInstruction.getDocStatus());
+		if (docStatus.isReversedOrVoided())
+		{
+			final int currentUserId = Env.getAD_User_ID(Env.getCtx()); // current/triggering user
+			if (currentUserId > 0)
+			{
+				return UserId.ofRepoId(currentUserId);
+			}
+
+			return UserId.ofRepoId(deliveryInstruction.getUpdatedBy()); // last updated
+		}
+		//
+		// Fallback: notify only the creator
+		else
+		{
+			return UserId.ofRepoId(deliveryInstruction.getCreatedBy());
+		}
 	}
 
 	private static TableRecordReference toTableRecordRef(@NonNull final I_M_ShipperTransportation deliveryInstruction)
@@ -106,7 +138,21 @@ public class DeliveryInstructionUserNotificationsProducer
 
 	private void postNotifications(final List<UserNotificationRequest> notifications)
 	{
-		Services.get(INotificationBL.class).sendAfterCommit(notifications);
+
+		notificationBL.sendAfterCommit(notifications);
+	}
+
+	public DeliveryInstructionUserNotificationsProducer notifyDeliveryInstructionError(@NonNull String partnerName, @NonNull String creditLimitDifference)
+	{
+		// don't send after commit, because the trx will very probably be rolled back if an error happened
+		notificationBL.send(newUserNotificationRequest()
+									.recipientUserId(Env.getLoggedUserId())
+									.contentADMessage(MSG_DeliveryInstruction_CreditLimitNotSufficient)
+									.contentADMessageParam(partnerName)
+									.contentADMessageParam(creditLimitDifference)
+									.build());
+
+		return this;
 	}
 
 }

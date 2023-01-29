@@ -1,6 +1,7 @@
 package de.metas.invoicecandidate.api.impl;
 
 import ch.qos.logback.classic.Level;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -20,7 +21,12 @@ import de.metas.bpartner.service.IBPartnerBL.RetrieveContactRequest;
 import de.metas.bpartner.service.IBPartnerBL.RetrieveContactRequest.ContactType;
 import de.metas.bpartner.service.IBPartnerBL.RetrieveContactRequest.IfNotFound;
 import de.metas.common.util.CoalesceUtil;
-import de.metas.document.IDocTypeDAO;
+import de.metas.document.DocTypeId;
+import de.metas.document.IDocTypeBL;
+import de.metas.document.invoicingpool.DocTypeInvoicingPool;
+import de.metas.document.invoicingpool.DocTypeInvoicingPoolCreateRequest;
+import de.metas.document.invoicingpool.DocTypeInvoicingPoolId;
+import de.metas.document.invoicingpool.DocTypeInvoicingPoolService;
 import de.metas.i18n.AdMessageKey;
 import de.metas.impex.InputDataSourceId;
 import de.metas.inout.InOutId;
@@ -73,6 +79,7 @@ import org.compiere.util.TimeUtil;
 import org.slf4j.Logger;
 
 import javax.annotation.Nullable;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -92,9 +99,12 @@ import static de.metas.common.util.CoalesceUtil.coalesce;
 public final class AggregationEngine
 {
 
+	@VisibleForTesting
 	public static AggregationEngine newInstance()
 	{
-		return builder().build();
+		return builder()
+				.docTypeInvoicingPoolService(SpringContextHolder.instance.getBean(DocTypeInvoicingPoolService.class))
+				.build();
 	}
 
 	//
@@ -109,7 +119,7 @@ public final class AggregationEngine
 	private final transient OrderEmailPropagationSysConfigRepository orderEmailPropagationSysConfigRepository = SpringContextHolder.instance.getBean(
 			OrderEmailPropagationSysConfigRepository.class);
 
-	private final transient IDocTypeDAO docTypeDAO = Services.get(IDocTypeDAO.class);
+	private final transient IDocTypeBL docTypeBL = Services.get(IDocTypeBL.class);
 	private final transient IAggregationDAO aggregationDAO = Services.get(IAggregationDAO.class);
 
 	private static final AdMessageKey ERR_INVOICE_CAND_PRICE_LIST_MISSING_2P = AdMessageKey.of("InvoiceCand_PriceList_Missing");
@@ -122,6 +132,8 @@ public final class AggregationEngine
 	private final LocalDate dateInvoicedParam;
 	private final LocalDate dateAcctParam;
 	private final boolean useDefaultBillLocationAndContactIfNotOverride;
+	private final DocTypeInvoicingPoolService docTypeInvoicingPoolService;
+	@Nullable private final BigDecimal currencyRate;
 
 	private final AdTableId inoutLineTableId;
 	/**
@@ -135,7 +147,9 @@ public final class AggregationEngine
 			final boolean alwaysUseDefaultHeaderAggregationKeyBuilder,
 			@Nullable final LocalDate dateInvoicedParam,
 			@Nullable final LocalDate dateAcctParam,
-			final boolean useDefaultBillLocationAndContactIfNotOverride)
+			final boolean useDefaultBillLocationAndContactIfNotOverride,
+			@Nullable final BigDecimal currencyRate,
+			@NonNull final DocTypeInvoicingPoolService docTypeInvoicingPoolService)
 	{
 		this.bpartnerBL = coalesce(bpartnerBL, Services.get(IBPartnerBL.class));
 
@@ -146,9 +160,12 @@ public final class AggregationEngine
 		this.dateInvoicedParam = dateInvoicedParam;
 		this.dateAcctParam = dateAcctParam;
 		this.useDefaultBillLocationAndContactIfNotOverride = useDefaultBillLocationAndContactIfNotOverride;
+		this.currencyRate = currencyRate;
 
 		final IADTableDAO adTableDAO = Services.get(IADTableDAO.class);
 		inoutLineTableId = AdTableId.ofRepoId(adTableDAO.retrieveTableId(I_M_InOutLine.Table_Name));
+		
+		this.docTypeInvoicingPoolService = docTypeInvoicingPoolService;
 	}
 
 	@Override
@@ -287,7 +304,7 @@ public final class AggregationEngine
 		InvoiceHeaderAndLineAggregators headerAndAggregators = key2headerAndAggregators.get(headerAggregationKey);
 		if (headerAndAggregators == null)
 		{
-			headerAndAggregators = new InvoiceHeaderAndLineAggregators(headerAggregationKey);
+			headerAndAggregators = createInvoiceHeaderAndLineAggregators(headerAggregationKey);
 			key2headerAndAggregators.put(headerAggregationKey, headerAndAggregators);
 
 			final InvoiceHeaderImplBuilder invoiceHeader = headerAndAggregators.getInvoiceHeader();
@@ -296,10 +313,10 @@ public final class AggregationEngine
 			// task 08451: log why we create a new invoice header
 			final ILoggable loggable = Loggables.withLogger(logger, Level.DEBUG);
 			loggable.addLog("Created new InvoiceHeaderAndLineAggregators instance. current number: {}\n"
-									+ "Params: ['ic'={}, 'headerAggregationKey'={}, 'inutId'={}, 'iciol'={}];\n"
-									+ " ic's own headerAggregationKey = {};\n"
-									+ " new headerAndAggregators = {}",
-							key2headerAndAggregators.size(), icRecord, headerAggregationKey, inoutId, iciol, icRecord.getHeaderAggregationKey(), headerAndAggregators);
+							+ "Params: ['ic'={}, 'headerAggregationKey'={}, 'inutId'={}, 'iciol'={}];\n"
+							+ " ic's own headerAggregationKey = {};\n"
+							+ " new headerAndAggregators = {}",
+					key2headerAndAggregators.size(), icRecord, headerAggregationKey, inoutId, iciol, icRecord.getHeaderAggregationKey(), headerAndAggregators);
 		}
 		else
 		{
@@ -366,6 +383,14 @@ public final class AggregationEngine
 		// Add invoice candidate to invoice line aggregator
 		final IInvoiceLineAggregationRequest icAggregationRequest = icAggregationRequestBuilder.build();
 		lineAggregator.addInvoiceCandidate(icAggregationRequest);
+	}
+
+	@NonNull
+	private InvoiceHeaderAndLineAggregators createInvoiceHeaderAndLineAggregators(@NonNull final AggregationKey headerAggregationKey)
+	{
+		final InvoiceHeaderAndLineAggregators invoiceHeaderAndLineAggregators = new InvoiceHeaderAndLineAggregators(headerAggregationKey);
+		invoiceHeaderAndLineAggregators.getInvoiceHeader().setCurrencyRate(currencyRate);
+		return invoiceHeaderAndLineAggregators;
 	}
 
 	private void addToInvoiceHeader(
@@ -436,8 +461,8 @@ public final class AggregationEngine
 				{
 					final String pricingSystemName = priceListDAO.getPricingSystemName(PricingSystemId.ofRepoIdOrNull(icRecord.getM_PricingSystem_ID()));
 					throw new AdempiereException(ERR_INVOICE_CAND_PRICE_LIST_MISSING_2P,
-												 pricingSystemName,
-												 invoiceHeader.getBillTo())
+							pricingSystemName,
+							invoiceHeader.getBillTo())
 							.appendParametersToMessage()
 							.setParameter("M_PricingSystem_ID", icRecord.getM_PricingSystem_ID())
 							.setParameter("C_Invoice_Candidate", icRecord);
@@ -460,8 +485,10 @@ public final class AggregationEngine
 
 			if (icRecord.getC_DocTypeInvoice_ID() > 0)
 			{
-				final I_C_DocType docTypeInvoice = docTypeDAO.getById(icRecord.getC_DocTypeInvoice_ID());
-				invoiceHeader.setC_DocTypeInvoice(docTypeInvoice);
+				final DocTypeInvoicingPoolId docTypeInvoicingPoolId = getOrCreateDocTypeInvoicingPool(DocTypeId.ofRepoId(icRecord.getC_DocTypeInvoice_ID()))
+						.getId();
+
+				invoiceHeader.setDocTypeInvoicingPoolId(docTypeInvoicingPoolId);
 			}
 
 			// 06630: set shipment id to header
@@ -576,12 +603,12 @@ public final class AggregationEngine
 		if (useDefaultBillLocationAndContactIfNotOverride)
 		{
 			final User defaultBillContact = bpartnerBL.retrieveContactOrNull(RetrieveContactRequest.builder()
-																					 .onlyActive(true)
-																					 .contactType(ContactType.BILL_TO_DEFAULT)
-																					 .bpartnerId(billBPLocationId.getBpartnerId())
-																					 .bPartnerLocationId(billBPLocationId)
-																					 .ifNotFound(IfNotFound.RETURN_NULL)
-																					 .build());
+					.onlyActive(true)
+					.contactType(ContactType.BILL_TO_DEFAULT)
+					.bpartnerId(billBPLocationId.getBpartnerId())
+					.bPartnerLocationId(billBPLocationId)
+					.ifNotFound(IfNotFound.RETURN_NULL)
+					.build());
 			if (defaultBillContact != null)
 			{
 				return BPartnerContactId.ofRepoId(defaultBillContact.getBpartnerId(), defaultBillContact.getId().getRepoId());
@@ -650,6 +677,7 @@ public final class AggregationEngine
 			return null;
 		}
 
+		setDocType(invoiceHeader);
 		// Set Invoice's DocBaseType
 		setDocBaseType(invoiceHeader);
 
@@ -667,21 +695,13 @@ public final class AggregationEngine
 
 		//
 		// Case: Invoice DocType was preset
-		if (invoiceHeader.getC_DocTypeInvoice() != null)
+		if (invoiceDocType != null)
 		{
 			Check.assume(invoiceIsSOTrx == invoiceDocType.isSOTrx(), "InvoiceHeader's IsSOTrx={} shall match document type {}", invoiceIsSOTrx, invoiceDocType);
 
 			final InvoiceDocBaseType invoiceDocBaseType = InvoiceDocBaseType.ofCode(invoiceDocType.getDocBaseType());
 
-			// handle negative amounts: switch the base type to credit memo, based on the IsSOTrx
-			if (totalAmt.signum() < 0)
-			{
-				docBaseType = flipDocBaseType(invoiceDocBaseType, invoiceIsSOTrx);
-			}
-			else
-			{
-				docBaseType = invoiceDocBaseType;
-			}
+			docBaseType = flipDocBaseTypeIfNeeded(invoiceDocBaseType, invoiceIsSOTrx, totalAmt);
 		}
 		//
 		// Case: no invoice DocType was set
@@ -724,10 +744,14 @@ public final class AggregationEngine
 		invoiceHeader.setDocBaseType(docBaseType);
 		invoiceHeader.setPaymentTermId(getPaymentTermId(invoiceHeader).orElse(null));
 	}
-
-	private InvoiceDocBaseType flipDocBaseType(final InvoiceDocBaseType docBaseType, final boolean invoiceIsSOTrx)
+	
+	@NonNull
+	private InvoiceDocBaseType flipDocBaseTypeIfNeeded(
+			@NonNull final InvoiceDocBaseType docBaseType,
+			final boolean invoiceIsSOTrx,
+			@NonNull final Money totalAmt)
 	{
-		if (docBaseType.isCreditMemo())
+		if (totalAmt.signum() > 0 && docBaseType.isCreditMemo())
 		{
 			if (invoiceIsSOTrx)
 			{
@@ -739,12 +763,16 @@ public final class AggregationEngine
 			}
 		}
 
-		if (invoiceIsSOTrx)
+		if (totalAmt.signum() < 0 && invoiceIsSOTrx)
 		{
 			return InvoiceDocBaseType.CustomerCreditMemo;
 		}
-
-		return InvoiceDocBaseType.VendorCreditMemo;
+		else if (totalAmt.signum() < 0 && !invoiceIsSOTrx)
+		{
+			return InvoiceDocBaseType.VendorCreditMemo;
+		}
+		
+		return docBaseType;
 	}
 
 	private Optional<PaymentTermId> getPaymentTermId(final InvoiceHeaderImpl invoiceHeader)
@@ -831,5 +859,53 @@ public final class AggregationEngine
 
 		return Optional.of(aggregationDAO.retrieveAggregation(InterfaceWrapperHelper.getCtx(icRecord),
 															  headerAggregationId.getRepoId()));
+	}
+
+	private void setDocType(@NonNull final InvoiceHeaderImpl invoiceHeader)
+	{
+		final boolean invoiceIsSOTrx = invoiceHeader.isSOTrx();
+
+		final I_C_DocType docTypeToBeUsed;
+
+		if (invoiceHeader.getDocTypeInvoicingPoolId().isPresent())
+		{
+			final DocTypeInvoicingPool docTypeInvoicingPool = docTypeInvoicingPoolService.getById(invoiceHeader.getDocTypeInvoicingPoolId().get());
+			final Money totalAmt = invoiceHeader.calculateTotalNetAmtFromLines();
+
+			docTypeToBeUsed = docTypeBL.getById(docTypeInvoicingPool.getDocTypeId(totalAmt));
+
+			Check.assume(invoiceIsSOTrx == docTypeToBeUsed.isSOTrx(), "InvoiceHeader's IsSOTrx={} shall match document type {}", invoiceIsSOTrx, docTypeToBeUsed);
+		}
+		else
+		{
+			docTypeToBeUsed = null;
+		}
+
+		invoiceHeader.setC_DocTypeInvoice(docTypeToBeUsed);
+	}
+
+	@NonNull
+	private DocTypeInvoicingPool getOrCreateDocTypeInvoicingPool(@NonNull final DocTypeId docTypeId)
+	{
+		final I_C_DocType docTypeInvoice = docTypeBL.getByIdInTrx(docTypeId);
+
+		return Optional.ofNullable(DocTypeInvoicingPoolId.ofRepoIdOrNull(docTypeInvoice.getC_DocType_Invoicing_Pool_ID()))
+				.map(docTypeInvoicingPoolService::getById)
+				.orElseGet(() -> {
+					final DocTypeInvoicingPoolCreateRequest request = DocTypeInvoicingPoolCreateRequest.builder()
+							.name(docTypeInvoice.getName())
+							.positiveAmountDocTypeId(DocTypeId.ofRepoId(docTypeInvoice.getC_DocType_ID()))
+							.negativeAmountDocTypeId(DocTypeId.ofRepoId(docTypeInvoice.getC_DocType_ID()))
+							.isSoTrx(SOTrx.ofBooleanNotNull(docTypeInvoice.isSOTrx()))
+							.build();
+
+					final DocTypeInvoicingPool pool = docTypeInvoicingPoolService.create(request);
+
+					docTypeInvoice.setC_DocType_Invoicing_Pool_ID(pool.getId().getRepoId());
+
+					docTypeBL.save(docTypeInvoice);
+
+					return pool;
+				});
 	}
 }
